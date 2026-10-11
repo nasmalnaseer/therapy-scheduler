@@ -1,26 +1,31 @@
-import React from 'react';
+import React, { useState } from 'react';
 import ExcelJS from 'exceljs';
 import { saveAs } from 'file-saver';
-import { db } from '../firebase';
-import { collection, getDocs } from 'firebase/firestore';
 import { format } from 'date-fns';
+import { useData } from '../context/DataContext';
+import { addDays, dateKey, startOfDay } from '../utils/timeUtils';
 
 const Export = () => {
-  const exportExcel = async () => {
-    const [scheduleSnap, doctorSnap, patientSnap] = await Promise.all([
-      getDocs(collection(db, 'schedule')),
-      getDocs(collection(db, 'doctors')),
-      getDocs(collection(db, 'patients'))
-    ]);
+  const { schedule, doctors: doctorList, patients: patientList } = useData();
+  const [from, setFrom] = useState(dateKey(new Date()));
+  const [to, setTo] = useState(dateKey(addDays(startOfDay(new Date()), 6)));
 
+  const exportExcel = async () => {
     const doctors = {};
-    doctorSnap.forEach(doc => doctors[doc.id] = doc.data());
+    doctorList.forEach(d => (doctors[d.id] = d));
 
     const patients = {};
-    patientSnap.forEach(doc => patients[doc.id] = doc.data());
+    patientList.forEach(p => (patients[p.id] = p));
 
-    const scheduleData = scheduleSnap.docs.map(doc => {
-      const s = doc.data();
+    // only the chosen dates, cancelled sessions left out, in time order
+    const scheduleData = schedule
+      .filter(s => s.status !== 'cancelled')
+      .filter(s => {
+        const k = dateKey(new Date(s.startTime));
+        return k >= from && k <= to;
+      })
+      .sort((a, b) => a.startTime.localeCompare(b.startTime))
+      .map(s => {
       return {
         date: format(new Date(s.startTime), 'yyyy-MM-dd'),
         time: format(new Date(s.startTime), 'HH:mm'),
@@ -116,14 +121,24 @@ row.getCell(2 + index).font = {
       col.width = max + 2;
     });
 
+    if (scheduleData.length === 0) {
+      alert('There are no sessions in that date range.');
+      return;
+    }
+
     const buffer = await workbook.xlsx.writeBuffer();
-    saveAs(new Blob([buffer]), 'Thanal_Schedule.xlsx');
+    saveAs(new Blob([buffer]), 'Therapy_Schedule.xlsx');
   };
 
   return (
     <div style={{ padding: '20px' }}>
       <h3>📤 Export Therapy Schedule</h3>
-      <button onClick={exportExcel}>📊 Export Excel</button>
+      <div className="row">
+        <label>From <input type="date" value={from} onChange={e => e.target.value && setFrom(e.target.value)} /></label>
+        <label>To <input type="date" value={to} onChange={e => e.target.value && setTo(e.target.value)} /></label>
+        <button onClick={exportExcel}>📊 Export Excel</button>
+      </div>
+      <p className="muted">Cancelled sessions are not included.</p>
     </div>
   );
 };

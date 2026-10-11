@@ -1,0 +1,33 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Each staff member has one document: users/{their auth uid} with a "role" of "admin" or "viewer".
+    // These documents are created by hand in the Firebase console, never from the app.
+    function userPath() {
+      return /databases/$(database)/documents/users/$(request.auth.uid);
+    }
+    function hasRole(roles) {
+      return request.auth != null
+        && exists(userPath())
+        && get(userPath()).data.role in roles;
+    }
+    function isStaff() { return hasRole(['admin', 'viewer']); }
+    function isAdmin() { return hasRole(['admin']); }
+
+    // A user may read only their own role document; nobody can write it from the app
+    match /users/{uid} {
+      allow read: if request.auth != null && request.auth.uid == uid;
+      allow write: if false;
+    }
+
+    // Everyone with a role can read; only admins can change data
+    match /patients/{id}  { allow read: if isStaff(); allow write: if isAdmin(); }
+    match /doctors/{id}   { allow read: if isStaff(); allow write: if isAdmin(); }
+    match /equipment/{id} { allow read: if isStaff(); allow write: if isAdmin(); }
+    match /schedule/{id}  { allow read: if isStaff(); allow write: if isAdmin(); }
+    match /config/{id}    { allow read: if isStaff(); allow write: if isAdmin(); }
+
+    // anything not listed above is denied by default
+  }
+}

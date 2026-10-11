@@ -1,0 +1,23 @@
+.tt-scroll { overflow-x: auto; border: 1px solid var(--border); border-radius: 10px; background: #fff; }
+.tt { display: flex; min-width: max-content; }
+.tt-axis { width: 52px; flex-shrink: 0; position: relative; border-right: 1px solid var(--border); background: #fafcfc; }
+.tt-axis span { position: absolute; right: 6px; font-size: 11px; color: var(--muted); transform: translateY(-50%); }
+.tt-head { display: flex; min-width: max-content; border-bottom: 1px solid var(--border); background: #eaf3f3; }
+.tt-head .spacer { width: 52px; flex-shrink: 0; }
+.tt-head .col-title { width: 170px; flex-shrink: 0; padding: 8px; font-size: 13px; font-weight: 600; border-left: 1px solid var(--border); }
+.tt-head .col-title small { display: block; font-weight: 400; color: var(--muted); }
+.tt-col { width: 170px; flex-shrink: 0; position: relative; border-left: 1px solid var(--border); background: #e9eeee; }
+.tt-block { position: absolute; left: 0; right: 0; background: #fff; }
+.tt-lines { position: absolute; inset: 0; pointer-events: none; }
+.tt-session {
+  position: absolute; left: 3px; right: 3px; border-radius: 6px; padding: 3px 6px;
+  font-size: 12px; line-height: 1.25; overflow: hidden; cursor: pointer;
+  color: #fff; border: 2px solid transparent; background: var(--info);
+}
+.tt-session.attended { background: var(--ok); }
+.tt-session.missed { background: var(--bad); }
+.tt-session.draggable { cursor: grab; }
+.tt-session.clash { border-color: #ffb300; box-shadow: 0 0 0 2px #ffb300; }
+.tt-session.selected { outline: 3px solid #222; }
+.tt-session b { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tt-legend { display: flex; gap: 8px; flex-wrap: wrap; margin: 8px 0; }
