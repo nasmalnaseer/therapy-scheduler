@@ -1,0 +1,44 @@
+.app-layout {
+  display: flex;
+  min-height: 100vh;
+  overflow: hidden;
+}
+
+.sidebar {
+  width: 240px;
+  background-color: #007b80;
+  color: white;
+  padding: 20px;
+  flex-shrink: 0;
+}
+
+.main-content {
+  flex: 1;
+  padding: 20px;
+  background-color: #f7f7f7;
+  overflow-y: auto;
+}
+
+/* ✅ Mobile responsive layout */
+@media (max-width: 768px) {
+  .app-layout {
+    flex-direction: column;
+  }
+
+  .sidebar {
+    width: 100%;
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-around;
+    padding: 10px;
+  }
+
+  .sidebar a {
+    margin: 5px;
+    font-size: 16px;
+  }
+
+  .main-content {
+    padding: 10px;
+  }
+}
