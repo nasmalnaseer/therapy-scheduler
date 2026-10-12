@@ -4,14 +4,17 @@ import './App.css';
 
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { DataProvider, useData } from './context/DataContext';
+import { ROUTE_PERMISSIONS } from './utils/permissions';
 
 import Sidebar from './components/Sidebar';
 import Login from './components/Login';
 import Dashboard from './components/Dashboard';
 import Timetable from './components/Timetable';
+import CheckIn from './components/CheckIn';
 import PrintSheets from './components/PrintSheets';
 import Reports from './components/Reports';
 import Export from './components/Export';
+import MyLeave from './components/MyLeave';
 import Scheduler from './components/Scheduler';
 import EditSchedule from './components/EditSchedule';
 import Plans from './components/Plans';
@@ -19,12 +22,32 @@ import AddDoctor from './components/AddDoctor';
 import AddPatient from './components/AddPatient';
 import Equipment from './components/Equipment';
 import TimeSlotManager from './components/TimeSlotManager';
+import Users from './components/Users';
 
-// Pages that change data are for admins only (Firestore rules enforce this too)
-const AdminOnly = ({ children }) => {
-  const { isAdmin } = useAuth();
-  return isAdmin ? children : <Navigate to="/" replace />;
+// A page the person's role may not open sends them back to the dashboard
+// (Firestore rules enforce the same limits on the server).
+const Guard = ({ path, children }) => {
+  const { can } = useAuth();
+  return can(ROUTE_PERMISSIONS[path]) ? children : <Navigate to="/" replace />;
 };
+
+const PAGES = [
+  ['/', Dashboard],
+  ['/timetable', Timetable],
+  ['/check-in', CheckIn],
+  ['/print', PrintSheets],
+  ['/reports', Reports],
+  ['/export', Export],
+  ['/my-leave', MyLeave],
+  ['/schedule', Scheduler],
+  ['/edit-schedule', EditSchedule],
+  ['/plans', Plans],
+  ['/add-doctor', AddDoctor],
+  ['/add-patient', AddPatient],
+  ['/equipment', Equipment],
+  ['/time-config', TimeSlotManager],
+  ['/users', Users]
+];
 
 function Shell() {
   const { loading, error } = useData();
@@ -36,18 +59,9 @@ function Shell() {
         <div className="main-content">
           {error && <div className="notice bad">Some data could not be loaded: {error}</div>}
           <Routes>
-            <Route path="/" element={<Dashboard />} />
-            <Route path="/timetable" element={<Timetable />} />
-            <Route path="/print" element={<PrintSheets />} />
-            <Route path="/reports" element={<Reports />} />
-            <Route path="/export" element={<Export />} />
-            <Route path="/schedule" element={<AdminOnly><Scheduler /></AdminOnly>} />
-            <Route path="/edit-schedule" element={<AdminOnly><EditSchedule /></AdminOnly>} />
-            <Route path="/plans" element={<AdminOnly><Plans /></AdminOnly>} />
-            <Route path="/add-doctor" element={<AdminOnly><AddDoctor /></AdminOnly>} />
-            <Route path="/add-patient" element={<AdminOnly><AddPatient /></AdminOnly>} />
-            <Route path="/equipment" element={<AdminOnly><Equipment /></AdminOnly>} />
-            <Route path="/time-config" element={<AdminOnly><TimeSlotManager /></AdminOnly>} />
+            {PAGES.map(([path, Page]) => (
+              <Route key={path} path={path} element={<Guard path={path}><Page /></Guard>} />
+            ))}
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
         </div>
@@ -56,23 +70,46 @@ function Shell() {
   );
 }
 
+function Message({ title, children }) {
+  const { logout } = useAuth();
+  return (
+    <div className="center-screen">
+      <div className="card login-card">
+        <h3>{title}</h3>
+        {children}
+        <button onClick={logout}>Sign out</button>
+      </div>
+    </div>
+  );
+}
+
 function Gate() {
-  const { user, role, loading, roleError, logout } = useAuth();
+  const { user, role, inactive, doctorId, loading, roleError } = useAuth();
   if (loading) return <div className="center-screen">Loading…</div>;
   if (!user) return <Login />;
-  if (role !== 'admin' && role !== 'viewer') {
+  if (inactive) {
     return (
-      <div className="center-screen">
-        <div className="card login-card">
-          <h3>No access yet</h3>
-          <p>
-            You are signed in as <strong>{user.email}</strong>, but this account has not been given a role.
-            Please ask the administrator to approve it.
-          </p>
-          {roleError && <p className="muted">{roleError}</p>}
-          <button onClick={logout}>Sign out</button>
-        </div>
-      </div>
+      <Message title="Account deactivated">
+        <p>This account has been switched off. Please contact the administrator.</p>
+      </Message>
+    );
+  }
+  if (!role) {
+    return (
+      <Message title="No access yet">
+        <p>
+          You are signed in as <strong>{user.email}</strong>, but this account has not been given a role.
+          Please ask the administrator to set it up.
+        </p>
+        {roleError && <p className="muted">{roleError}</p>}
+      </Message>
+    );
+  }
+  if (role === 'doctor' && !doctorId) {
+    return (
+      <Message title="Not linked to a doctor yet">
+        <p>This doctor login is not linked to a doctor record. Please ask the administrator to link it.</p>
+      </Message>
     );
   }
   return (

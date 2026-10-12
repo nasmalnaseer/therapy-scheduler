@@ -1,11 +1,12 @@
 import React, { useState } from 'react';
 import { NavLink } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
+import { NAV, ROLE_LABELS } from '../utils/permissions';
 import './Sidebar.css';
 
 const Sidebar = () => {
   const [isOpen, setIsOpen] = useState(false);
-  const { user, role, isAdmin, logout } = useAuth();
+  const { user, profile, role, can, logout } = useAuth();
 
   const closeMenu = () => setIsOpen(false);
   const toggleMenu = () => setIsOpen(!isOpen);
@@ -37,32 +38,24 @@ const Sidebar = () => {
           <button className="close-btn" onClick={closeMenu}>✖</button>
         </div>
         <nav className="sidebar-nav">
-          <div className="sidebar-section">Daily</div>
-          {link('/', '🏠 Dashboard', true)}
-          {link('/timetable', '🗓️ Timetable')}
-          {link('/print', '🖨️ Print & Share')}
-          {link('/reports', '📈 Reports')}
-          {link('/export', '📄 Export')}
-
-          {isAdmin && (
-            <>
-              <div className="sidebar-section">Scheduling</div>
-              {link('/schedule', '⚙️ Scheduler')}
-              {link('/edit-schedule', '✏️ Edit Sessions')}
-              {link('/plans', '🔁 Recurring Plans')}
-
-              <div className="sidebar-section">Setup</div>
-              {link('/add-doctor', '🧑‍⚕️ Doctors & Leave')}
-              {link('/add-patient', '🧑‍🦽 Patients')}
-              {link('/equipment', '🦾 Equipment')}
-              {link('/time-config', '🕒 Time Config')}
-            </>
-          )}
+          {NAV.map(([section, items]) => {
+            const visible = items.filter(([, , perm]) => can(perm));
+            if (visible.length === 0) return null;
+            return (
+              <React.Fragment key={section}>
+                <div className="sidebar-section">{section}</div>
+                {visible.map(([path, label]) => (
+                  <React.Fragment key={path}>{link(path, label, path === '/')}</React.Fragment>
+                ))}
+              </React.Fragment>
+            );
+          })}
         </nav>
 
         <div className="sidebar-user">
-          <div className="who">{user?.email}</div>
-          <div className="role">{role}</div>
+          <div className="who">{profile?.name || user?.email}</div>
+          {profile?.name && <div className="who muted-white">{user?.email}</div>}
+          <div className="role">{ROLE_LABELS[role] || role}</div>
           <button onClick={logout}>Sign out</button>
         </div>
       </div>

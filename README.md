@@ -32,9 +32,27 @@ A therapy scheduling system built for a rehabilitation hospital. Staff generate 
 - Doctor utilization, attendance and missed-session rate, sessions per therapy per week
 
 **Platform**
-- Staff sign-in with two roles: **admin** (can change data) and **viewer** (read-only), enforced by Firestore security rules
+- Staff sign-in with **five roles** (admin, scheduling staff, doctor, reception, manager), created by the admin from inside the app and enforced by Firestore security rules (see *Roles* below)
 - Live updates: when one person changes something, everyone sees it without refreshing
 - Responsive layout, installable on a phone (PWA)
+
+## Roles
+
+| | Admin | Scheduling staff | Doctor / Therapist | Reception | Manager |
+|---|:-:|:-:|:-:|:-:|:-:|
+| Dashboard | ✔ | ✔ | own sessions | ✔ | ✔ |
+| Timetable, Print & Share | ✔ | ✔ | own only | ✔ | – |
+| Check-in (attended / missed) | ✔ | ✔ | own only | ✔ | – |
+| Generate / edit / move / cancel sessions, recurring plans | ✔ | ✔ | – | – | – |
+| Register and edit patients | ✔ | ✔ | – | – | – |
+| Delete patients | ✔ | – | – | – | – |
+| Patient phone numbers, WhatsApp | ✔ | ✔ | – | ✔ | – |
+| Doctor leave and availability | ✔ | ✔ | own leave | – | – |
+| Add / delete doctors and equipment | ✔ | – | – | – | – |
+| Reports and Excel export | ✔ | ✔ | – | – | ✔ |
+| Time Config, Users & Roles | ✔ | – | – | – | – |
+
+Logins are created on the **Users & Roles** page. The new person gets an email to choose their own password. The rules in `firestore.rules` enforce all of this on the server, so hiding a button is never the only protection.
 
 ## Tech stack
 
@@ -59,11 +77,12 @@ All scheduling decisions (slot generation, clash detection, equipment, leave, pl
 
 | Collection | Document fields |
 |---|---|
-| `users/{uid}` | `role`: `"admin"` or `"viewer"` (created by hand in the Firebase console) |
+| `users/{uid}` | `name`, `email`, `role` (`admin` / `scheduler` / `doctor` / `reception` / `manager`), `active`, `doctorId` (doctors only). Managed from the Users & Roles page; the first admin is created by hand |
 | `doctors` | `name`, `therapy`, `available`, `leave: [{ date: "yyyy-MM-dd", part: "full" \| "am" \| "pm" }]` |
-| `patients` | `name`, `phone`, `therapies[]`, `therapySlots{therapy: 1-3}`, `assignedDoctors{therapy: doctorId}` |
+| `patients` | `name`, `therapies[]`, `therapySlots{therapy: 1-3}`, `assignedDoctors{therapy: doctorId}` |
+| `patientContacts/{patientId}` | `phone` (separate so managers and doctors cannot read it) |
 | `equipment` | `name`, `therapy`, `available` |
-| `schedule` | `patientId`, `doctorId`, `therapy`, `startTime` (ISO), `duration` (min), `equipmentId`, `status`, `planId?`, `rescheduledFrom?` |
+| `schedule` | `patientId`, `patientName` (copied so doctors, who cannot read patients, still see it), `doctorId`, `therapy`, `startTime` (ISO), `duration` (min), `equipmentId`, `status`, `planId?`, `rescheduledFrom?` |
 | `config/timeslots` | `default: [{start, end}]`, `tuesday: [{start, end}]`, `closedDays[]`, `durations{therapy: minutes}` |
 
 ## Getting started
@@ -77,14 +96,14 @@ npm run build      # production build into build/
 
 ### One-time Firebase setup
 1. **Authentication → Sign-in method:** enable *Email/Password*.
-2. **Authentication → Users:** add each staff member (email + password) and copy their **User UID**.
-3. **Firestore → Start collection `users`:** one document per person, **Document ID = their UID**, with a string field `role` set to `admin` or `viewer`.
-4. Deploy the app, then the security rules (in this order):
+2. **Authentication → Users:** add yourself (email + password) and copy your **User UID**.
+3. **Firestore → Start collection `users`:** one document, **Document ID = your UID**, with a string field `role` set to `admin`. This is the only login created by hand; everyone else is added from the **Users & Roles** page.
+4. Deploy the rules and indexes, then the app:
 
 ```bash
+firebase deploy --only firestore:rules,firestore:indexes
 npm run build
 firebase deploy --only hosting
-firebase deploy --only firestore:rules
 ```
 
 ## Project structure
@@ -93,10 +112,11 @@ firebase deploy --only firestore:rules
 src/
   context/     AuthContext (sign-in + role), DataContext (live Firestore data)
   hooks/       useSessionOps (edit / status / reschedule with clash checks)
-  utils/       scheduling.js, reports.js, plans.js, share.js, timeUtils.js  <- pure logic + tests
+  utils/       scheduling.js, permissions.js, reports.js, plans.js, share.js, timeUtils.js  <- pure logic + tests
   components/  one file per page (Dashboard, Timetable, Scheduler, ...)
   __tests__/   screen tests with Firebase stubbed out
 firestore.rules   role-based security rules
+firestore.indexes.json   the one extra index doctor logins need
 public/           manifest.json + sw.js (installable app)
 ```
 

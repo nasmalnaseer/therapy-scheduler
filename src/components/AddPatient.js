@@ -1,10 +1,12 @@
 import React, { useState } from 'react';
-import { addDoc, collection, deleteDoc, doc, updateDoc } from 'firebase/firestore';
+import { addDoc, collection, deleteDoc, deleteField, doc, setDoc, updateDoc } from 'firebase/firestore';
 import { db } from '../firebase';
+import { useAuth } from '../context/AuthContext';
 import { useData } from '../context/DataContext';
 import { THERAPIES } from '../utils/constants';
 
 const AddPatient = () => {
+  const { can } = useAuth();
   const { patients, doctors } = useData();
   const [name, setName] = useState('');
   const [phone, setPhone] = useState('');
@@ -48,10 +50,14 @@ const AddPatient = () => {
     if (!name.trim()) return alert('Please enter the patient name.');
     // only keep doctor choices that are real (empty = "No Preference")
     const cleanDoctors = Object.fromEntries(Object.entries(assignedDoctors).filter(([, v]) => v));
-    const payload = { name: name.trim(), phone: phone.trim(), therapies, assignedDoctors: cleanDoctors, therapySlots };
+    const payload = { name: name.trim(), therapies, assignedDoctors: cleanDoctors, therapySlots };
     try {
-      if (editingId) await updateDoc(doc(db, 'patients', editingId), payload);
-      else await addDoc(collection(db, 'patients'), payload);
+      // The phone number is kept in patientContacts so only some roles can read it
+      let id = editingId;
+      if (editingId) await updateDoc(doc(db, 'patients', editingId), { ...payload, phone: deleteField() });
+      else id = (await addDoc(collection(db, 'patients'), payload)).id;
+      if (phone.trim()) await setDoc(doc(db, 'patientContacts', id), { phone: phone.trim() });
+      else if (editingId) await deleteDoc(doc(db, 'patientContacts', id));
       resetForm();
     } catch (err) {
       alert(`Could not save: ${err.message}`);
@@ -72,6 +78,7 @@ const AddPatient = () => {
     if (!window.confirm(`Delete ${patient.name}? Their existing sessions stay in the schedule history.`)) return;
     try {
       await deleteDoc(doc(db, 'patients', patient.id));
+      await deleteDoc(doc(db, 'patientContacts', patient.id));
       if (editingId === patient.id) resetForm();
     } catch (err) {
       alert(`Could not delete: ${err.message}`);
@@ -169,7 +176,7 @@ const AddPatient = () => {
                   </td>
                   <td>
                     <button className="small" onClick={() => handleEdit(patient)}>Edit</button>
-                    <button className="small danger" onClick={() => handleDelete(patient)}>Delete</button>
+                    {can('patients.delete') && <button className="small danger" onClick={() => handleDelete(patient)}>Delete</button>}
                   </td>
                 </tr>
               ))}

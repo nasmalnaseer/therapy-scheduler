@@ -1,4 +1,5 @@
 import React, { useMemo, useState } from 'react';
+import { useAuth } from '../context/AuthContext';
 import { useData } from '../context/DataContext';
 import StatusBadge from './StatusBadge';
 import { APP_NAME, prettyTherapy } from '../utils/constants';
@@ -8,7 +9,9 @@ import { buildPatientMessage, whatsappUrl } from '../utils/share';
 
 // One printable page per doctor or per patient. "Print" -> choose "Save as PDF" in the print dialog.
 export default function PrintSheets() {
+  const { role, doctorId, can } = useAuth();
   const { schedule, doctors, patients, equipmentName, patientName, doctorName } = useData();
+  const patientSheets = can('patients.read') && role !== 'doctor'; // doctors only ever print their own sheet
   const [dateStr, setDateStr] = useState(dateKey(new Date()));
   const [mode, setMode] = useState('doctor');
   const [who, setWho] = useState('all');
@@ -22,7 +25,7 @@ export default function PrintSheets() {
     [schedule, dateStr]
   );
 
-  const people = mode === 'doctor' ? doctors : patients;
+  const people = mode === 'doctor' ? doctors.filter((d) => role !== 'doctor' || d.id === doctorId) : patients;
   const key = mode === 'doctor' ? 'doctorId' : 'patientId';
   const sheets = people
     .filter((p) => who === 'all' || p.id === who)
@@ -41,10 +44,12 @@ export default function PrintSheets() {
         <h3>Print & Share</h3>
         <div className="row">
           <input type="date" value={dateStr} onChange={(e) => e.target.value && setDateStr(e.target.value)} />
-          <select value={mode} onChange={(e) => { setMode(e.target.value); setWho('all'); }}>
-            <option value="doctor">Doctor sheets</option>
-            <option value="patient">Patient sheets</option>
-          </select>
+          {patientSheets && (
+            <select value={mode} onChange={(e) => { setMode(e.target.value); setWho('all'); }}>
+              <option value="doctor">Doctor sheets</option>
+              <option value="patient">Patient sheets</option>
+            </select>
+          )}
           <select value={who} onChange={(e) => setWho(e.target.value)}>
             <option value="all">{mode === 'doctor' ? 'All doctors' : 'All patients with sessions'}</option>
             {[...people].sort((a, b) => a.name.localeCompare(b.name)).map((p) => (
@@ -65,7 +70,7 @@ export default function PrintSheets() {
               <h3 style={{ marginBottom: 2 }}>{person.name}{mode === 'doctor' && <span className="muted"> · {prettyTherapy(person.therapy)}</span>}</h3>
               <div className="muted">{APP_NAME} · {formatNiceDate(day)}</div>
             </div>
-            {mode === 'patient' && list.length > 0 && (
+            {mode === 'patient' && list.length > 0 && can('patients.contacts') && (
               <button className="secondary small no-print" onClick={() => share(person, list)}>💬 WhatsApp</button>
             )}
           </div>

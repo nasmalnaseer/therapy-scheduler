@@ -12,7 +12,9 @@ const PX_PER_MIN = 1.3;
 const SNAP = 15;
 
 export default function Timetable() {
-  const { isAdmin } = useAuth();
+  const { role, doctorId, can } = useAuth();
+  const canEdit = can('sessions.edit');
+  const isDoctor = role === 'doctor';
   const { schedule, doctors, config, patientName } = useData();
   const ops = useSessionOps();
   const [dateStr, setDateStr] = useState(dateKey(new Date()));
@@ -35,10 +37,11 @@ export default function Timetable() {
   const height = (gridEnd - gridStart) * PX_PER_MIN;
 
   const columns = doctors
+    .filter((d) => !isDoctor || d.id === doctorId)
     .filter((d) => therapy === 'all' || d.therapy === therapy)
     .sort((a, b) => a.therapy.localeCompare(b.therapy) || a.name.localeCompare(b.name));
   const knownIds = new Set(doctors.map((d) => d.id));
-  const orphan = daySessions.filter((s) => !knownIds.has(s.doctorId));
+  const orphan = isDoctor ? [] : daySessions.filter((s) => !knownIds.has(s.doctorId));
 
   const clashing = useMemo(() => {
     const ids = new Set();
@@ -58,7 +61,7 @@ export default function Timetable() {
 
   const onDrop = async (e, doctorId) => {
     e.preventDefault();
-    if (!isAdmin || !drag.current) return;
+    if (!canEdit || !drag.current) return;
     const session = schedule.find((s) => s.id === drag.current.id);
     const grab = drag.current.grabMin;
     drag.current = null;
@@ -78,7 +81,7 @@ export default function Timetable() {
   const renderSession = (s) => {
     const top = (minutesOfDay(sessionStart(s)) - gridStart) * PX_PER_MIN;
     const h = sessionDuration(s) * PX_PER_MIN;
-    const cls = ['tt-session', statusOf(s), isAdmin ? 'draggable' : '', clashing.has(s.id) ? 'clash' : '', selectedId === s.id ? 'selected' : '']
+    const cls = ['tt-session', statusOf(s), canEdit ? 'draggable' : '', clashing.has(s.id) ? 'clash' : '', selectedId === s.id ? 'selected' : '']
       .filter(Boolean)
       .join(' ');
     return (
@@ -86,7 +89,7 @@ export default function Timetable() {
         key={s.id}
         className={cls}
         style={{ top, height: Math.max(h - 2, 18) }}
-        draggable={isAdmin}
+        draggable={canEdit}
         title={`${patientName(s.patientId)} · ${prettyTherapy(s.therapy)} · ${timeKey(sessionStart(s))}-${timeKey(sessionEnd(s))}`}
         onClick={() => setSelectedId(s.id)}
         onDragStart={(e) => {
@@ -110,8 +113,8 @@ export default function Timetable() {
       key={doctor?.id || 'orphan'}
       className="tt-col"
       style={{ height }}
-      onDragOver={isAdmin ? (e) => e.preventDefault() : undefined}
-      onDrop={isAdmin && doctor ? (e) => onDrop(e, doctor.id) : undefined}
+      onDragOver={canEdit ? (e) => e.preventDefault() : undefined}
+      onDrop={canEdit && doctor ? (e) => onDrop(e, doctor.id) : undefined}
     >
       {blocks.map(([s, e], i) => (
         <div key={i} className="tt-block" style={{ top: (s - gridStart) * PX_PER_MIN, height: (e - s) * PX_PER_MIN }} />
@@ -130,11 +133,13 @@ export default function Timetable() {
       <div className="row">
         <input type="date" value={dateStr} onChange={(e) => e.target.value && setDateStr(e.target.value)} />
         <button className="secondary small" onClick={() => setDateStr(dateKey(new Date()))}>Today</button>
-        <select value={therapy} onChange={(e) => setTherapy(e.target.value)}>
-          <option value="all">All therapies</option>
-          {THERAPIES.map((t) => <option key={t} value={t}>{prettyTherapy(t)}</option>)}
-        </select>
-        <span className="muted">{daySessions.length} session(s){isAdmin ? ' · drag a session to move it (on a computer), or click it for more options' : ' · click a session for details'}</span>
+        {!isDoctor && (
+          <select value={therapy} onChange={(e) => setTherapy(e.target.value)}>
+            <option value="all">All therapies</option>
+            {THERAPIES.map((t) => <option key={t} value={t}>{prettyTherapy(t)}</option>)}
+          </select>
+        )}
+        <span className="muted">{daySessions.length} session(s){canEdit ? ' · drag a session to move it (on a computer), or click it for more options' : ' · click a session for details'}</span>
       </div>
       <div className="tt-legend">
         <span className="badge scheduled">Scheduled</span>

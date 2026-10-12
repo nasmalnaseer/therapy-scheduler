@@ -20,7 +20,7 @@ import {
 import { commitOps } from '../utils/firestoreOps';
 
 const Scheduler = () => {
-  const { patients, doctors, equipment, schedule, config, patientName, doctorName, equipmentName } = useData();
+  const { patients, doctors, equipment, schedule, config, patientName: nameOfPatient, doctorName, equipmentName } = useData();
   const [selectedDate, setSelectedDate] = useState(dateKey(new Date()));
   const [weekMode, setWeekMode] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
@@ -74,7 +74,8 @@ const Scheduler = () => {
     const start = new Date(startTime).toISOString();
     const duration = getDuration(config.durations, therapy);
     const eq = pickEquipment({ equipment, therapy, startTime: start, duration, sessions: schedule });
-    const candidate = { patientId, therapy, doctorId, startTime: start, duration, equipmentId: eq.id };
+    const patientName = patients.find((p) => p.id === patientId)?.name || '';
+    const candidate = { patientId, patientName, therapy, doctorId, startTime: start, duration, equipmentId: eq.id };
     const conflicts = findConflicts({ candidate, sessions: schedule, doctors, patients, equipment, config });
     if (eq.needed && !eq.id) conflicts.push({ type: 'equipment', message: 'No free equipment unit at that time' });
     if (conflicts.length && !window.confirm(`${formatConflicts(conflicts)}\n\nAdd anyway?`)) return;
@@ -92,10 +93,10 @@ const Scheduler = () => {
         .filter((s) => dayKeys.has(dateKey(sessionStart(s))))
         .filter((s) => {
           const q = searchTerm.toLowerCase();
-          return !q || patientName(s.patientId).toLowerCase().includes(q) || doctorName(s.doctorId).toLowerCase().includes(q) || s.therapy.includes(q);
+          return !q || nameOfPatient(s.patientId).toLowerCase().includes(q) || doctorName(s.doctorId).toLowerCase().includes(q) || s.therapy.includes(q);
         })
         .sort((a, b) => a.therapy.localeCompare(b.therapy) || sessionStart(a) - sessionStart(b)),
-    [schedule, dayKeys, searchTerm, patientName, doctorName]
+    [schedule, dayKeys, searchTerm, nameOfPatient, doctorName]
   );
 
   return (
@@ -177,7 +178,7 @@ const Scheduler = () => {
             {shown.map((s) => (
               <tr key={s.id} style={isActive(s) ? undefined : { opacity: 0.55 }}>
                 <td>{s.therapy}</td>
-                <td>{patientName(s.patientId)}</td>
+                <td>{nameOfPatient(s.patientId)}</td>
                 <td>{doctorName(s.doctorId)}</td>
                 <td>{dateKey(sessionStart(s))} {timeKey(sessionStart(s))}</td>
                 <td>{timeKey(sessionEnd(s))}{s.duration ? '' : ' (?)'} <span className="muted">{sessionDuration(s)}m</span></td>

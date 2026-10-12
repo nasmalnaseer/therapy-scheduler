@@ -38,6 +38,7 @@ export default function useSessionOps() {
     if (!guard(conflicts, 'Save')) return false;
     await updateDoc(doc(db, 'schedule', session.id), {
       patientId: next.patientId,
+      patientName: patients.find((p) => p.id === next.patientId)?.name || session.patientName || '',
       doctorId: next.doctorId,
       startTime: next.startTime,
       equipmentId: eq.id ?? null

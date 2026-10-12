@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { addDoc, collection, deleteDoc, doc, updateDoc } from 'firebase/firestore';
 import { db } from '../firebase';
+import { useAuth } from '../context/AuthContext';
 import { useData } from '../context/DataContext';
 import { prettyTherapy, THERAPIES } from '../utils/constants';
 import { isActive } from '../utils/scheduling';
@@ -8,6 +9,8 @@ import { isActive } from '../utils/scheduling';
 // Machines / kits that only one patient can use at a time (VR kit, robotic gait trainer...).
 // If a therapy has at least one unit listed here, every session of that therapy gets a free unit.
 export default function Equipment() {
+  const { can } = useAuth();
+  const canManage = can('equipment.manage'); // scheduling staff can only switch units in / out of service
   const { equipment, schedule } = useData();
   const [name, setName] = useState('');
   const [therapy, setTherapy] = useState('');
@@ -42,7 +45,7 @@ export default function Equipment() {
         Add each machine or kit that only one patient can use at a time. The scheduler will never book the same unit twice at the same time.
         Therapies with no equipment listed are not limited.
       </p>
-      <div className="card">
+      {canManage && <div className="card">
         <div className="row">
           <input type="text" placeholder="Name (e.g. VR kit 1)" value={name} onChange={(e) => setName(e.target.value)} />
           <select value={therapy} onChange={(e) => setTherapy(e.target.value)}>
@@ -51,7 +54,7 @@ export default function Equipment() {
           </select>
           <button onClick={add}>Add equipment</button>
         </div>
-      </div>
+      </div>}
 
       {sorted.length === 0 ? <p className="muted">No equipment added.</p> : (
         <table className="data-table">
@@ -64,7 +67,7 @@ export default function Equipment() {
                 <td>{e.available === false ? <span className="badge warn">Out of service</span> : <span className="badge ok">In service</span>}</td>
                 <td>
                   <button className="small secondary" onClick={() => toggle(e)}>{e.available === false ? 'Mark in service' : 'Mark out of service'}</button>
-                  <button className="small danger" onClick={() => remove(e)}>Delete</button>
+                  {canManage && <button className="small danger" onClick={() => remove(e)}>Delete</button>}
                 </td>
               </tr>
             ))}
