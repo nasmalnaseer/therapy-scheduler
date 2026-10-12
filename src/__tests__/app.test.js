@@ -48,7 +48,14 @@ jest.mock('firebase/firestore', () => ({
   deleteDoc: jest.fn(),
   setDoc: jest.fn(),
   writeBatch: jest.fn(),
+  deleteField: jest.fn(),
+  getDocs: jest.fn(),
   onSnapshot: jest.fn()
+}));
+jest.mock('../utils/adminAuth', () => ({
+  createLogin: jest.fn(),
+  sendPasswordEmail: jest.fn(),
+  friendlyAuthError: (e) => (e && e.message) || 'error'
 }));
 jest.mock('firebase/auth', () => ({
   onAuthStateChanged: jest.fn(),
@@ -60,6 +67,7 @@ jest.mock('file-saver', () => ({ saveAs: jest.fn() }));
 
 const firestore = require('firebase/firestore');
 const fbAuth = require('firebase/auth');
+const adminAuth = require('../utils/adminAuth');
 
 // ---------- app imports (after mocks) ----------
 const { AuthContext } = require('../context/AuthContext');
@@ -78,6 +86,10 @@ const { default: AddPatient } = require('../components/AddPatient');
 const { default: Equipment } = require('../components/Equipment');
 const { default: TimeConfig } = require('../components/TimeSlotManager');
 const { default: Sidebar } = require('../components/Sidebar');
+const { default: Users } = require('../components/Users');
+const { default: CheckIn } = require('../components/CheckIn');
+const { default: MyLeave } = require('../components/MyLeave');
+const { can: canRole } = require('../utils/permissions');
 const { default: Login } = require('../components/Login');
 const { buildSchedule, normalizeConfig, sessionStart } = require('../utils/scheduling');
 const { dateKey, startOfDay } = require('../utils/timeUtils');
@@ -96,6 +108,10 @@ function applyFirebaseMocks() {
   firestore.deleteDoc.mockImplementation(() => Promise.resolve());
   firestore.setDoc.mockImplementation(() => Promise.resolve());
   firestore.writeBatch.mockImplementation(() => mockBatch);
+  firestore.deleteField.mockImplementation(() => '__DELETE__');
+  firestore.getDocs.mockImplementation(() => Promise.resolve({ docs: [] }));
+  adminAuth.createLogin.mockImplementation(() => Promise.resolve('newuid'));
+  adminAuth.sendPasswordEmail.mockImplementation(() => Promise.resolve());
   firestore.onSnapshot.mockImplementation((ref, ok) => {
     Promise.resolve().then(() => {
       if (ref.type === 'collection') {
@@ -138,23 +154,38 @@ const today = startOfDay(new Date());
 const makeSessions = () =>
   buildSchedule({ days: [today], patients, doctors, equipment, config, existing: [] }).placed.map((s, i) => ({ id: `s${i}`, ...s }));
 
-const dataValue = (schedule) => ({
-  patients, doctors, equipment, schedule, config, loading: false, error: '',
-  patientName: (id) => patients.find((p) => p.id === id)?.name || 'Unknown patient',
-  doctorName: (id) => doctors.find((d) => d.id === id)?.name || 'Unknown doctor',
-  equipmentName: (id) => equipment.find((e) => e.id === id)?.name || ''
+// What each role really receives (mirrors DataContext): doctors get no patient list and only their own sessions,
+// and only some roles get phone numbers.
+const dataValue = (schedule, role = 'admin', doctorId = null) => {
+  const seesPatients = canRole(role, 'patients.read');
+  const seesPhones = canRole(role, 'patients.contacts');
+  const visibleSchedule = role === 'doctor' ? schedule.filter((s) => s.doctorId === doctorId) : schedule;
+  const visiblePatients = seesPatients ? patients.map((p) => ({ ...p, phone: seesPhones ? p.phone || '' : '' })) : [];
+  const names = {};
+  patients.forEach((p) => { names[p.id] = p.name; });
+  return {
+    patients: visiblePatients, doctors, equipment, schedule: visibleSchedule, config, loading: false, error: '',
+    patientName: (id) => names[id] || 'Unknown patient',
+    doctorName: (id) => doctors.find((d) => d.id === id)?.name || 'Unknown doctor',
+    equipmentName: (id) => equipment.find((e) => e.id === id)?.name || '',
+    phoneOf: (id) => (seesPhones ? patients.find((p) => p.id === id)?.phone || '' : '')
+  };
+};
+const authValue = (role = 'admin', doctorId = null) => ({
+  user: { email: 'staff@hospital.test', uid: 'u1' }, profile: { name: 'Test Person', role }, role, doctorId,
+  isAdmin: role === 'admin', can: (a) => canRole(role, a), loading: false, inactive: false,
+  logout: jest.fn(), login: jest.fn(() => Promise.resolve())
 });
-const authValue = (role = 'admin') => ({ user: { email: 'staff@hospital.test', uid: 'u1' }, role, isAdmin: role === 'admin', loading: false, logout: jest.fn(), login: jest.fn(() => Promise.resolve()) });
 
 // ---------- tiny DOM helpers ----------
 let container;
 let root;
-const render = async (ui, { role = 'admin', schedule = makeSessions() } = {}) => {
+const render = async (ui, { role = 'admin', doctorId = null, schedule = makeSessions() } = {}) => {
   await act(async () => {
     root.render(
       <MemoryRouter>
-        <AuthContext.Provider value={authValue(role)}>
-          <DataContext.Provider value={dataValue(schedule)}>{ui}</DataContext.Provider>
+        <AuthContext.Provider value={authValue(role, doctorId)}>
+          <DataContext.Provider value={dataValue(schedule, role, doctorId)}>{ui}</DataContext.Provider>
         </AuthContext.Provider>
       </MemoryRouter>
     );
@@ -238,24 +269,107 @@ describe('every page renders with data', () => {
   });
 });
 
-describe('roles', () => {
-  test('viewer cannot see admin links, drag sessions or change status', async () => {
-    await render(<Sidebar />, { role: 'viewer' });
-    expect(text()).toContain('Dashboard');
-    ['/schedule', '/edit-schedule', '/plans', '/add-doctor', '/add-patient', '/equipment', '/time-config'].forEach((href) =>
-      expect(container.querySelector(`a[href="${href}"]`)).toBeNull()
-    );
-    await render(<Timetable />, { role: 'viewer' });
+describe('roles: what each person sees', () => {
+  const links = () => [...container.querySelectorAll('.sidebar-link')].map((a) => a.getAttribute('href'));
+
+  test('sidebar shows only the pages each role may open', async () => {
+    const expected = {
+      admin: ['/', '/timetable', '/check-in', '/print', '/reports', '/export', '/schedule', '/edit-schedule', '/plans', '/add-doctor', '/add-patient', '/equipment', '/time-config', '/users'],
+      scheduler: ['/', '/timetable', '/check-in', '/print', '/reports', '/export', '/schedule', '/edit-schedule', '/plans', '/add-doctor', '/add-patient', '/equipment'],
+      doctor: ['/', '/timetable', '/check-in', '/print', '/my-leave'],
+      reception: ['/', '/timetable', '/check-in', '/print'],
+      manager: ['/', '/reports', '/export']
+    };
+    for (const [role, hrefs] of Object.entries(expected)) {
+      await render(<Sidebar />, { role, doctorId: role === 'doctor' ? 'd1' : null });
+      expect(links()).toEqual(hrefs);
+    }
+  });
+
+  test('sidebar shows the person\'s name and role label', async () => {
+    await render(<Sidebar />, { role: 'reception' });
+    expect(text()).toContain('Test Person');
+    expect(text()).toContain('Reception');
+  });
+
+  test('manager sees no WhatsApp, no status buttons and no phone numbers', async () => {
+    await render(<AddPatient />, { role: 'manager' });
+    expect(text()).not.toContain('98765');
+  });
+
+  test('doctor: timetable shows only their own column and no drag, no edit controls', async () => {
+    const schedule = makeSessions();
+    await render(<Timetable />, { role: 'doctor', doctorId: 'd2', schedule });
+    expect(container.querySelectorAll('.tt-col').length).toBe(1);
+    expect(text()).toContain('Dr Ben');
+    expect(text()).not.toContain('Dr Asha');
     expect(container.querySelector('.tt-session[draggable="true"]')).toBeNull();
     await click(container.querySelector('.tt-session'));
-    expect(text()).toContain('WhatsApp reminder');
-    expect(buttons('Attended').length).toBe(0);
+    expect(buttons('Attended').length + buttons('Missed').length).toBeGreaterThan(0);
+    ['Cancel session', 'Reschedule', 'Save move', 'WhatsApp'].forEach((l) => expect(buttons(l).length).toBe(0));
   });
-  test('admin sees everything', async () => {
-    await render(<Sidebar />);
-    ['/schedule', '/edit-schedule', '/plans', '/add-doctor', '/add-patient', '/equipment', '/time-config'].forEach((href) =>
-      expect(container.querySelector(`a[href="${href}"]`)).not.toBeNull()
-    );
+
+  test('doctor: dashboard is "My day" with only their own numbers and no patient list', async () => {
+    await render(<Dashboard />, { role: 'doctor', doctorId: 'd2' });
+    expect(text()).toContain('My day');
+    expect(text()).not.toContain('Patients with no session today');
+    expect(text()).not.toContain('Dr Asha');
+  });
+
+  test('doctor: check-in lists only their sessions, can tick them but cannot cancel', async () => {
+    await render(<CheckIn />, { role: 'doctor', doctorId: 'd2' });
+    const doctorsInTable = [...container.querySelectorAll('tbody tr')].filter((r) => r.textContent.includes('Dr '));
+    expect(doctorsInTable.length).toBe(0); // the doctor column is hidden for doctors
+    expect(buttons('Attended').length).toBeGreaterThan(0);
+    expect(buttons('Cancel').length).toBe(0);
+    expect(buttons('💬').length).toBe(0); // no phone numbers for doctors
+  });
+
+  test('doctor: print page offers only their own sheet', async () => {
+    await render(<PrintSheets />, { role: 'doctor', doctorId: 'd2' });
+    expect(container.querySelectorAll('select').length).toBe(1); // only the "which doctor" picker, no patient mode
+    expect(container.querySelectorAll('.print-sheet').length).toBe(1);
+    expect(container.querySelector('.print-sheet').textContent).toContain('Dr Ben');
+  });
+
+  test('reception: can check patients in and send reminders but not cancel, move or reschedule', async () => {
+    await render(<Timetable />, { role: 'reception' });
+    expect(container.querySelector('.tt-session[draggable="true"]')).toBeNull();
+    await click(container.querySelector('.tt-session'));
+    expect(buttons('WhatsApp reminder').length).toBe(1);
+    expect(buttons('Attended').length).toBe(1);
+    ['Cancel session', 'Reschedule', 'Save move'].forEach((l) => expect(buttons(l).length).toBe(0));
+  });
+
+  test('reception cannot bring back a cancelled session', async () => {
+    const schedule = makeSessions();
+    schedule[0] = { ...schedule[0], status: 'cancelled' };
+    await render(<CheckIn />, { role: 'reception', schedule });
+    // cancelled sessions are not even listed in check-in
+    expect([...container.querySelectorAll('tbody tr')].length).toBe(schedule.length - 1);
+  });
+
+  test('scheduling staff: can edit sessions but cannot add or delete doctors, equipment or patients', async () => {
+    await render(<AddDoctor />, { role: 'scheduler' });
+    expect(text()).toContain('Doctors & Leave');
+    expect(container.querySelector('input[placeholder="Doctor Name"]')).toBeNull();
+    expect(buttons('Delete').length).toBe(0);
+    expect(buttons('Leave').length).toBeGreaterThan(0);
+    await render(<Equipment />, { role: 'scheduler' });
+    expect(container.querySelector('input[type="text"]')).toBeNull();
+    expect(buttons('Delete').length).toBe(0);
+    expect(buttons('out of service').length).toBeGreaterThan(0);
+    await render(<AddPatient />, { role: 'scheduler' });
+    expect(buttons('Edit').length).toBeGreaterThan(0);
+    expect(buttons('Delete').length).toBe(0);
+  });
+
+  test('admin sees every control', async () => {
+    await render(<AddDoctor />);
+    expect(container.querySelector('input[placeholder="Doctor Name"]')).not.toBeNull();
+    expect(buttons('Delete').length).toBeGreaterThan(0);
+    await render(<AddPatient />);
+    expect(buttons('Delete').length).toBeGreaterThan(0);
   });
 });
 
@@ -422,6 +536,291 @@ describe('real AuthContext + DataContext through <App />', () => {
     await mountApp();
     expect(text()).toContain('Dashboard');
     expect(text()).not.toContain('Time Config');
+  });
+});
+
+describe('account states and what each role is allowed to load', () => {
+  const mountApp = async () => { await act(async () => { root.render(<App />); }); await act(async () => {}); await act(async () => {}); };
+  const collectionsRead = () => firestore.collection.mock.calls.map((c) => c[1]);
+
+  test('a deactivated account is told so and loads no data', async () => {
+    mockAuthUser = { uid: 'u3', email: 'gone@hospital.test' };
+    mockStore.users.u3 = { role: 'admin', active: false };
+    await mountApp();
+    expect(text()).toContain('Account deactivated');
+    expect(collectionsRead()).not.toContain('patients');
+  });
+
+  test('a doctor login that is not linked to a doctor record cannot continue', async () => {
+    mockAuthUser = { uid: 'u4', email: 'dr@hospital.test' };
+    mockStore.users.u4 = { role: 'doctor' };
+    await mountApp();
+    expect(text()).toContain('Not linked to a doctor yet');
+  });
+
+  test('an unknown role string gets no access', async () => {
+    mockAuthUser = { uid: 'u5', email: 'odd@hospital.test' };
+    mockStore.users.u5 = { role: 'superhero' };
+    await mountApp();
+    expect(text()).toContain('No access yet');
+  });
+
+  test('old "viewer" accounts keep working as read-only managers', async () => {
+    mockAuthUser = { uid: 'u2', email: 'view@hospital.test' };
+    mockStore.users.u2 = { role: 'viewer' };
+    await mountApp();
+    expect(text()).toContain('Manager');
+    expect(container.querySelector('a[href="/reports"]')).not.toBeNull();
+    expect(container.querySelector('a[href="/schedule"]')).toBeNull();
+  });
+
+  test('a doctor only asks for their own sessions and never touches patients or phone numbers', async () => {
+    mockAuthUser = { uid: 'u6', email: 'asha@hospital.test' };
+    mockStore.users.u6 = { role: 'doctor', doctorId: 'd1', name: 'Dr Asha' };
+    mockStore.schedule = makeSessions();
+    await mountApp();
+    expect(text()).toContain('My day');
+    expect(collectionsRead()).not.toContain('patients');
+    expect(collectionsRead()).not.toContain('patientContacts');
+    expect(firestore.where.mock.calls).toEqual(expect.arrayContaining([['doctorId', '==', 'd1']]));
+  });
+
+  test('reception loads patients and phone numbers; a manager loads patients but not phone numbers', async () => {
+    mockAuthUser = { uid: 'u7', email: 'desk@hospital.test' };
+    mockStore.users.u7 = { role: 'reception' };
+    await mountApp();
+    expect(collectionsRead()).toEqual(expect.arrayContaining(['patients', 'patientContacts']));
+    act(() => root.unmount());
+    root = createRoot(container);
+    jest.clearAllMocks();
+    applyFirebaseMocks();
+    mockAuthUser = { uid: 'u8', email: 'mgr@hospital.test' };
+    mockStore.users.u8 = { role: 'manager' };
+    await mountApp();
+    expect(collectionsRead()).toContain('patients');
+    expect(collectionsRead()).not.toContain('patientContacts');
+  });
+});
+
+describe('Users & Roles page (admin)', () => {
+  const fill = async (name, email, role, doctor) => {
+    const card = container.querySelector('.card'); // the "Create a login" card
+    const [nameInput, emailInput] = card.querySelectorAll('input');
+    await setValue(nameInput, name);
+    await setValue(emailInput, email);
+    await setValue(card.querySelectorAll('select')[0], role);
+    if (doctor) await setValue(card.querySelectorAll('select')[1], doctor);
+  };
+  const existing = [
+    { id: 'u1', name: 'Me Admin', email: 'me@hospital.test', role: 'admin', active: true },
+    { id: 'u9', name: 'Sam Scheduler', email: 'sam@hospital.test', role: 'scheduler', active: true },
+    { id: 'u10', name: 'Old Viewer', email: 'old@hospital.test', role: 'viewer' }
+  ];
+  const renderUsers = async () => {
+    mockStore.users = {};
+    firestore.onSnapshot.mockImplementation((ref, ok) => {
+      Promise.resolve().then(() => ref.name === 'users' && ok({ docs: existing.map((u) => ({ id: u.id, data: () => { const { id, ...rest } = u; return rest; } })) }));
+      return () => {};
+    });
+    await render(<Users />);
+    await act(async () => {});
+  };
+
+  test('creates a login, saves the role document and emails a password link', async () => {
+    await renderUsers();
+    await fill('Nina Nurse', ' Nina@Hospital.TEST ', 'reception');
+    await clickBtn('Create login');
+    expect(adminAuth.createLogin).toHaveBeenCalledWith('nina@hospital.test');
+    const [ref, data] = firestore.setDoc.mock.calls[0];
+    expect(ref).toEqual({ type: 'doc', col: 'users', id: 'newuid' });
+    expect(data).toMatchObject({ name: 'Nina Nurse', email: 'nina@hospital.test', role: 'reception', active: true, createdBy: 'u1' });
+    expect('doctorId' in data).toBe(false);
+    expect(Object.values(data).includes(undefined)).toBe(false); // Firestore rejects undefined
+    expect(adminAuth.sendPasswordEmail).toHaveBeenCalledWith('nina@hospital.test');
+    expect(text()).toContain('Login created for nina@hospital.test');
+  });
+
+  test('a doctor login must be linked to a doctor record and stores the link', async () => {
+    await renderUsers();
+    await fill('Dr New', 'new@hospital.test', 'doctor');
+    await clickBtn('Create login');
+    expect(text()).toContain('Choose which doctor');
+    expect(adminAuth.createLogin).not.toHaveBeenCalled();
+    await fill('Dr New', 'new@hospital.test', 'doctor', 'd3');
+    await clickBtn('Create login');
+    expect(firestore.setDoc.mock.calls[0][1]).toMatchObject({ role: 'doctor', doctorId: 'd3' });
+  });
+
+  test('bad input is rejected before anything is created', async () => {
+    await renderUsers();
+    await fill('', 'x@y.co', 'scheduler');
+    await clickBtn('Create login');
+    expect(text()).toContain('enter the person');
+    await fill('Name', 'not-an-email', 'scheduler');
+    await clickBtn('Create login');
+    expect(text()).toContain('valid email');
+    expect(adminAuth.createLogin).not.toHaveBeenCalled();
+  });
+
+  test('if the email already has a login the admin gets a clear explanation', async () => {
+    await renderUsers();
+    adminAuth.createLogin.mockImplementationOnce(() => Promise.reject({ message: 'That email already has a login.' }));
+    await fill('Dup', 'dup@hospital.test', 'scheduler');
+    await clickBtn('Create login');
+    expect(text()).toContain('already has a login');
+    expect(firestore.setDoc).not.toHaveBeenCalled();
+  });
+
+  test('lists everyone, treats legacy viewers as managers, and protects the admin\'s own row', async () => {
+    await renderUsers();
+    expect(text()).toContain('Sam Scheduler');
+    expect(text()).toContain('Manager (read-only)'); // the old "viewer"
+    const myRow = [...container.querySelectorAll('tbody tr')].find((r) => r.textContent.includes('Me Admin'));
+    expect(myRow.textContent).toContain('(you)');
+    expect(myRow.querySelectorAll('button').length).toBe(0);
+  });
+
+  test('deactivate, reactivate-style updates and role changes write only the fields they should', async () => {
+    await renderUsers();
+    const sam = () => [...container.querySelectorAll('tbody tr')].find((r) => r.textContent.includes('Sam Scheduler'));
+    await click([...sam().querySelectorAll('button')].find((b) => b.textContent === 'Deactivate'));
+    expect(firestore.updateDoc).toHaveBeenCalledWith({ type: 'doc', col: 'users', id: 'u9' }, { active: false });
+    await click([...sam().querySelectorAll('button')].find((b) => b.textContent === 'Change role'));
+    await setValue(sam().querySelector('select'), 'manager');
+    await click([...sam().querySelectorAll('button')].find((b) => b.textContent === 'Save'));
+    expect(firestore.updateDoc).toHaveBeenCalledWith({ type: 'doc', col: 'users', id: 'u9' }, { role: 'manager', doctorId: '__DELETE__' });
+  });
+
+  test('sends a password email on request and removes access after confirmation', async () => {
+    await renderUsers();
+    const sam = () => [...container.querySelectorAll('tbody tr')].find((r) => r.textContent.includes('Sam Scheduler'));
+    await click([...sam().querySelectorAll('button')].find((b) => b.textContent === 'Send password email'));
+    expect(adminAuth.sendPasswordEmail).toHaveBeenCalledWith('sam@hospital.test');
+    await click([...sam().querySelectorAll('button')].find((b) => b.textContent === 'Remove'));
+    expect(window.confirm).toHaveBeenCalled();
+    expect(firestore.deleteDoc).toHaveBeenCalledWith({ type: 'doc', col: 'users', id: 'u9' });
+  });
+
+  test('"Add an existing login" saves a role for a UID from the Firebase console', async () => {
+    await renderUsers();
+    await click(container.querySelectorAll('h4')[2]); // expand
+    const inputs = [...container.querySelectorAll('input')].filter((i) => i.placeholder === 'UID');
+    await setValue(inputs[0], 'abc123uid');
+    const section = inputs[0].closest('.card');
+    const [name, email] = [...section.querySelectorAll('input')].slice(1);
+    await setValue(name, 'Console Person');
+    await setValue(email, 'console@hospital.test');
+    await click([...section.querySelectorAll('button')].find((b) => b.textContent === 'Save role'));
+    expect(firestore.setDoc.mock.calls[0][0]).toEqual({ type: 'doc', col: 'users', id: 'abc123uid' });
+    expect(firestore.setDoc.mock.calls[0][1]).toMatchObject({ name: 'Console Person', role: 'scheduler' });
+  });
+
+  test('tidy-up: moves phone numbers off the patient records into the restricted collection', async () => {
+    await renderUsers();
+    firestore.getDocs.mockImplementation(() => Promise.resolve({ docs: [
+      { id: 'p1', data: () => ({ name: 'Anil', phone: '98765 43210' }) },
+      { id: 'p2', data: () => ({ name: 'Beena' }) },
+      { id: 'p3', data: () => ({ name: 'Chandran', phone: '' }) }
+    ] }));
+    await clickBtn('Move patient phone numbers');
+    expect(mockBatch.set).toHaveBeenCalledWith({ type: 'doc', col: 'patientContacts', id: 'p1' }, { phone: '98765 43210' });
+    expect(mockBatch.update).toHaveBeenCalledWith({ type: 'doc', col: 'patients', id: 'p1' }, { phone: '__DELETE__' });
+    expect(mockBatch.update).toHaveBeenCalledWith({ type: 'doc', col: 'patients', id: 'p3' }, { phone: '__DELETE__' });
+    expect(mockBatch.update).not.toHaveBeenCalledWith({ type: 'doc', col: 'patients', id: 'p2' }, expect.anything());
+    expect(text()).toContain('Moved 1 phone number');
+  });
+
+  test('tidy-up: adds patient names to older sessions', async () => {
+    const old = makeSessions().map((s) => { const { patientName, ...rest } = s; return rest; });
+    mockStore.users = {};
+    firestore.onSnapshot.mockImplementation((ref, ok) => { Promise.resolve().then(() => ref.name === 'users' && ok({ docs: [] })); return () => {}; });
+    await render(<Users />, { schedule: old });
+    await clickBtn('Add patient names to older sessions');
+    expect(mockBatch.update.mock.calls.length).toBe(old.length);
+    expect(mockBatch.update.mock.calls[0][1]).toHaveProperty('patientName');
+  });
+});
+
+describe('check-in, my leave, patients and the dashboard alert', () => {
+  test('reception ticks a patient attended and missed from the check-in list', async () => {
+    await render(<CheckIn />, { role: 'reception' });
+    await clickBtn('Attended', 0);
+    await clickBtn('Missed', 0);
+    const statuses = firestore.updateDoc.mock.calls.map(([, d]) => d.status);
+    expect(statuses).toEqual(expect.arrayContaining(['attended', 'missed']));
+    expect(buttons('💬').length).toBeGreaterThan(0);
+    await clickBtn('💬', 0);
+    expect(window.open.mock.calls[0][0]).toMatch(/^https:\/\/wa\.me\//);
+  });
+
+  test('a doctor adds and removes their own leave and is warned about sessions inside it', async () => {
+    const schedule = makeSessions();
+    const mine = schedule.find((s) => s.doctorId === 'd1');
+    await render(<MyLeave />, { role: 'doctor', doctorId: 'd1', schedule });
+    await setValue(container.querySelector('input[type="date"]'), dateKey(today));
+    await clickBtn('Add leave');
+    const [ref, data] = firestore.updateDoc.mock.calls[0];
+    expect(ref).toEqual({ type: 'doc', col: 'doctors', id: 'd1' });
+    expect(data).toEqual({ leave: [{ date: dateKey(today), part: 'full' }] });
+    expect(mine).toBeTruthy();
+  });
+
+  test('my leave shows the sessions that clash and tells the scheduling staff will move them', async () => {
+    const schedule = makeSessions();
+    const withLeave = { ...dataValue(schedule, 'doctor', 'd1') };
+    withLeave.doctors = doctors.map((d) => (d.id === 'd1' ? { ...d, leave: [{ date: dateKey(today), part: 'full' }] } : d));
+    await act(async () => {
+      root.render(<MemoryRouter><AuthContext.Provider value={authValue('doctor', 'd1')}><DataContext.Provider value={withLeave}><MyLeave /></DataContext.Provider></AuthContext.Provider></MemoryRouter>);
+    });
+    expect(text()).toContain('fall inside this leave');
+    expect(text()).toContain('scheduling staff');
+  });
+
+  test('adding a patient stores the phone number in patientContacts, not on the patient', async () => {
+    await render(<AddPatient />);
+    await setValue(container.querySelector('input[type="text"]'), 'New Person');
+    await setValue(container.querySelector('input[type="tel"]'), '99999 11111');
+    await clickBtn('Add Patient');
+    const [, patientDoc] = firestore.addDoc.mock.calls[0];
+    expect('phone' in patientDoc).toBe(false);
+    expect(firestore.setDoc).toHaveBeenCalledWith({ type: 'doc', col: 'patientContacts', id: 'new' }, { phone: '99999 11111' });
+  });
+
+  test('editing a patient removes any old phone field and updates the contact', async () => {
+    await render(<AddPatient />);
+    await clickBtn('Edit', 0);
+    await setValue(container.querySelector('input[type="tel"]'), '90000 00000');
+    await clickBtn('Update Patient');
+    const [ref, data] = firestore.updateDoc.mock.calls[0];
+    expect(ref.col).toBe('patients');
+    expect(data.phone).toBe('__DELETE__');
+    expect(firestore.setDoc.mock.calls[0][1]).toEqual({ phone: '90000 00000' });
+  });
+
+  test('only admins can delete a patient, and the contact goes with them', async () => {
+    await render(<AddPatient />);
+    await clickBtn('Delete', 0);
+    const cols = firestore.deleteDoc.mock.calls.map(([ref]) => ref.col);
+    expect(cols).toEqual(['patients', 'patientContacts']);
+  });
+
+  test('dashboard flags sessions stuck with a doctor on leave and moves them on request', async () => {
+    const tomorrow = new Date(today); tomorrow.setDate(tomorrow.getDate() + 1);
+    const ymd = dateKey(tomorrow);
+    const s = { id: 'x1', patientId: 'p1', doctorId: 'd1', therapy: 'physio', status: 'scheduled', duration: 60, startTime: new Date(tomorrow.getFullYear(), tomorrow.getMonth(), tomorrow.getDate(), 10).toISOString() };
+    const value = dataValue([s]);
+    value.doctors = doctors.map((d) => (d.id === 'd1' ? { ...d, leave: [{ date: ymd, part: 'full' }] } : d));
+    await act(async () => {
+      root.render(<MemoryRouter><AuthContext.Provider value={authValue('scheduler')}><DataContext.Provider value={value}><Dashboard /></DataContext.Provider></AuthContext.Provider></MemoryRouter>);
+    });
+    expect(text()).toContain('Needs attention');
+    await clickBtn('Move them to free doctors');
+    expect(mockBatch.update).toHaveBeenCalledWith({ type: 'doc', col: 'schedule', id: 'x1' }, { doctorId: 'd2' });
+    // reception / managers do not get the alert (they cannot act on it)
+    await act(async () => {
+      root.render(<MemoryRouter><AuthContext.Provider value={authValue('reception')}><DataContext.Provider value={value}><Dashboard /></DataContext.Provider></AuthContext.Provider></MemoryRouter>);
+    });
+    expect(text()).not.toContain('Needs attention');
   });
 });
 

@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { addDoc, collection, deleteDoc, doc, updateDoc } from 'firebase/firestore';
 import { db } from '../firebase';
+import { useAuth } from '../context/AuthContext';
 import { useData } from '../context/DataContext';
 import { LEAVE_PARTS, THERAPIES } from '../utils/constants';
 import { reassignAffected, sessionsAffected } from '../utils/scheduling';
@@ -8,6 +9,8 @@ import { commitOps } from '../utils/firestoreOps';
 import { dateKey } from '../utils/timeUtils';
 
 export default function AddDoctor() {
+  const { can } = useAuth();
+  const canManage = can('doctors.manage'); // adding / deleting doctors is for admins; scheduling staff manage leave and availability
   const { doctors, schedule, patientName } = useData();
   const [name, setName] = useState('');
   const [therapy, setTherapy] = useState('');
@@ -100,15 +103,15 @@ export default function AddDoctor() {
 
   return (
     <div>
-      <h3>Add Doctor</h3>
-      <div className="row">
+      <h3>{canManage ? 'Add Doctor' : 'Doctors & Leave'}</h3>
+      {canManage && <div className="row">
         <input type="text" placeholder="Doctor Name" value={name} onChange={(e) => setName(e.target.value)} />
         <select value={therapy} onChange={(e) => setTherapy(e.target.value)}>
           <option value="">Select Therapy</option>
           {THERAPIES.map((t) => <option key={t} value={t}>{t}</option>)}
         </select>
         <button onClick={handleAddDoctor}>Add Doctor</button>
-      </div>
+      </div>}
 
       <div style={{ marginTop: 20 }}>
         <input
@@ -137,7 +140,7 @@ export default function AddDoctor() {
                 <button className="small secondary" onClick={() => setOpenLeaveFor(openLeaveFor === d.id ? null : d.id)}>
                   🏖️ Leave ({upcomingLeave.length})
                 </button>
-                <button className="small danger" onClick={() => handleDelete(d)}>❌ Delete</button>
+                {canManage && <button className="small danger" onClick={() => handleDelete(d)}>❌ Delete</button>}
               </div>
             </div>
 

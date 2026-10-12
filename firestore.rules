@@ -2,32 +2,109 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // Each staff member has one document: users/{their auth uid} with a "role" of "admin" or "viewer".
-    // These documents are created by hand in the Firebase console, never from the app.
-    function userPath() {
-      return /databases/$(database)/documents/users/$(request.auth.uid);
+    // ------------------------------------------------------------------
+    // Who is signed in?  Each person has one document: users/{their uid}
+    //   { name, email, role, active, doctorId? }
+    // role: admin | scheduler | doctor | reception | manager
+    // ("viewer" from the first version still works and means manager.)
+    // ------------------------------------------------------------------
+    function signedIn()  { return request.auth != null; }
+    function userPath()  { return /databases/$(database)/documents/users/$(request.auth.uid); }
+    function profile()   { return get(userPath()).data; }
+    function hasProfile() {
+      return signedIn() && exists(userPath()) && profile().get('active', true) != false;
     }
-    function hasRole(roles) {
-      return request.auth != null
-        && exists(userPath())
-        && get(userPath()).data.role in roles;
-    }
-    function isStaff() { return hasRole(['admin', 'viewer']); }
-    function isAdmin() { return hasRole(['admin']); }
+    function inRoles(roles) { return hasProfile() && profile().role in roles; }
 
-    // A user may read only their own role document; nobody can write it from the app
+    function isAdmin()     { return inRoles(['admin']); }
+    function isScheduler() { return inRoles(['scheduler']); }
+    function isDoctor()    { return inRoles(['doctor']); }
+    function isReception() { return inRoles(['reception']); }
+    function planners()    { return inRoles(['admin', 'scheduler']); }
+    function myDoctorId()  { return profile().get('doctorId', ''); }
+
+    // changing nothing except the listed fields
+    function onlyChanges(fields) {
+      return request.resource.data.diff(resource.data).affectedKeys().hasOnly(fields);
+    }
+    // reception and doctors may only tick sessions attended / missed (never cancel or move them)
+    function statusTick() {
+      return onlyChanges(['status'])
+        && request.resource.data.status in ['scheduled', 'attended', 'missed']
+        && resource.data.get('status', 'scheduled') in ['scheduled', 'attended', 'missed'];
+    }
+
+    // ------------------------------------------------------------------
+    // users: a person reads their own role; only an admin manages others.
+    // Nobody (not even an admin) can change their OWN document, so the last admin cannot lock themselves out.
+    // ------------------------------------------------------------------
+    function validUser(d) {
+      return d.keys().hasOnly(['name', 'email', 'role', 'active', 'doctorId', 'createdAt', 'createdBy'])
+        && d.role in ['admin', 'scheduler', 'doctor', 'reception', 'manager', 'viewer']
+        && (d.role != 'doctor' || (d.get('doctorId', '') is string && d.get('doctorId', '') != ''));
+    }
     match /users/{uid} {
-      allow read: if request.auth != null && request.auth.uid == uid;
-      allow write: if false;
+      allow read:   if signedIn() && (request.auth.uid == uid || isAdmin());
+      allow create: if isAdmin() && request.auth.uid != uid && validUser(request.resource.data);
+      allow update: if isAdmin() && request.auth.uid != uid && validUser(request.resource.data);
+      allow delete: if isAdmin() && request.auth.uid != uid;
     }
 
-    // Everyone with a role can read; only admins can change data
-    match /patients/{id}  { allow read: if isStaff(); allow write: if isAdmin(); }
-    match /doctors/{id}   { allow read: if isStaff(); allow write: if isAdmin(); }
-    match /equipment/{id} { allow read: if isStaff(); allow write: if isAdmin(); }
-    match /schedule/{id}  { allow read: if isStaff(); allow write: if isAdmin(); }
-    match /config/{id}    { allow read: if isStaff(); allow write: if isAdmin(); }
+    // ------------------------------------------------------------------
+    // patients: names and therapies. Doctors cannot read this list at all.
+    // ------------------------------------------------------------------
+    match /patients/{id} {
+      allow read:            if inRoles(['admin', 'scheduler', 'reception', 'manager', 'viewer']);
+      allow create, update:  if planners();
+      allow delete:          if isAdmin();
+    }
 
-    // anything not listed above is denied by default
+    // phone numbers: kept apart so managers and doctors never get them
+    match /patientContacts/{id} {
+      allow read:  if inRoles(['admin', 'scheduler', 'reception']);
+      allow write: if planners();
+    }
+
+    // ------------------------------------------------------------------
+    // doctors: everyone signed in with a role can read.
+    //   admin: everything | scheduling staff: availability and anyone's leave | doctor: only their own leave
+    // ------------------------------------------------------------------
+    match /doctors/{id} {
+      allow read:   if hasProfile();
+      allow create, delete: if isAdmin();
+      allow update: if isAdmin()
+        || (isScheduler() && onlyChanges(['available', 'leave']))
+        || (isDoctor() && id == myDoctorId() && onlyChanges(['leave']));
+    }
+
+    // equipment: scheduling staff can only switch a unit in or out of service
+    match /equipment/{id} {
+      allow read:   if hasProfile();
+      allow create, delete: if isAdmin();
+      allow update: if isAdmin() || (isScheduler() && onlyChanges(['available']));
+    }
+
+    // ------------------------------------------------------------------
+    // schedule (sessions)
+    //   read:   everyone except doctors sees all; a doctor sees only their own sessions
+    //   create / delete / edit: admin and scheduling staff
+    //   status tick: reception, and a doctor on their own sessions
+    // ------------------------------------------------------------------
+    match /schedule/{id} {
+      allow read:   if inRoles(['admin', 'scheduler', 'reception', 'manager', 'viewer'])
+                    || (isDoctor() && resource.data.doctorId == myDoctorId());
+      allow create, delete: if planners();
+      allow update: if planners()
+                    || (isReception() && statusTick())
+                    || (isDoctor() && resource.data.doctorId == myDoctorId() && statusTick());
+    }
+
+    // opening hours, session lengths, closed days
+    match /config/{id} {
+      allow read:  if hasProfile();
+      allow write: if isAdmin();
+    }
+
+    // anything not listed above is denied
   }
 }

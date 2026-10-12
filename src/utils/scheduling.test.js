@@ -13,6 +13,7 @@ import {
   sessionEnd,
   sessionStart,
   sessionsAffected,
+  sessionsOnLeave,
   slotsForDay
 } from './scheduling';
 import { attendanceByTherapy, attendanceStats, capacityMinutes, doctorUtilization, weeklyTherapyCounts } from './reports';
@@ -200,6 +201,21 @@ describe('doctor leave', () => {
     const list = [s('a', '09:00'), s('b', '14:15'), s('c', '10:00', 'attended')];
     const hit = sessionsAffected({ doctorId: 'd1', schedule: list, fromMs: 0, leave: { date: '2026-10-12', part: 'am' } });
     expect(hit.map((x) => x.id)).toEqual(['a']);
+  });
+});
+
+describe('doctor-role support', () => {
+  test('every new session carries the patient name (doctors cannot read the patient list)', () => {
+    const { placed } = buildSchedule({ days: [MONDAY], patients: [patient('a', ['physio'])], doctors: [doctor('d1', 'physio')], config: config(), existing: [] });
+    expect(placed[0].patientName).toBe('Patient a');
+  });
+
+  test('sessionsOnLeave finds upcoming sessions of doctors who are on leave or unavailable', () => {
+    const docs = [doctor('d1', 'physio', { leave: [{ date: '2026-10-12', part: 'am' }] }), doctor('d2', 'physio', { available: false }), doctor('d3', 'physio')];
+    const s = (id, doctorId, hhmm, status = 'scheduled') => ({ id, doctorId, status, startTime: atTime(MONDAY, hhmm).toISOString(), duration: 60 });
+    const list = [s('a', 'd1', '09:00'), s('b', 'd1', '14:15'), s('c', 'd2', '10:00'), s('d', 'd3', '10:00'), s('e', 'd1', '09:00', 'cancelled')];
+    expect(sessionsOnLeave({ schedule: list, doctors: docs, fromMs: 0 }).map((x) => x.id)).toEqual(['a', 'c']);
+    expect(sessionsOnLeave({ schedule: list, doctors: docs, fromMs: atTime(MONDAY, '09:30').getTime() }).map((x) => x.id)).toEqual(['c']);
   });
 });
 

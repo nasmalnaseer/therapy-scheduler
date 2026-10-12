@@ -26,7 +26,7 @@ No new packages are needed. Sign-in uses `firebase/auth`, which is already insid
 
 ## 3. Run the tests and a build
 ```bash
-npm test -- --watchAll=false     # should say 60 passed
+npm test -- --watchAll=false     # every test should pass
 npm run build                    # should say "Compiled successfully"
 ```
 
@@ -39,7 +39,7 @@ If it is still tracked: `git rm -r --cached build`
 2. **Authentication → Users → Add user.** Create your admin account and copy its **User UID**.
 3. **Build → Firestore Database → Start collection** named `users`.
    Document ID = the UID you copied. Add a field `role` (type *string*) with the value `admin`.
-4. Repeat for every other staff member. Use `viewer` for people who should only look, not edit.
+4. Everyone else is added later from the **Users & Roles** page inside the app (see `ROLES_UPDATE.md`), so you only need to create yourself here.
 
 ## 6. Deploy in this order (the order matters)
 ```bash

@@ -288,6 +288,7 @@ export function placeSessions({ day, requests, doctors, equipment = [], config, 
       if (c.equipmentId) add(equipmentUsage, c.equipmentId, c.a, c.b);
       placed.push({
         patientId: patient.id,
+        patientName: patient.name || '', // copied so doctors, who cannot read the patient list, still see the name
         doctorId: success.doctor.id,
         therapy,
         startTime: c.s.toISOString(),
@@ -431,6 +432,17 @@ export function sessionsAffected({ doctorId, schedule, fromMs, leave = null }) {
     const start = sessionStart(s);
     if (start.getTime() < fromMs) return false;
     return leave ? leaveCovers({ leave: [leave] }, start) : true;
+  });
+}
+
+// Upcoming scheduled sessions whose doctor is now on leave or unavailable (they need to be moved)
+export function sessionsOnLeave({ schedule, doctors, fromMs }) {
+  return schedule.filter((s) => {
+    if (statusOf(s) !== 'scheduled') return false;
+    const start = sessionStart(s);
+    if (start.getTime() < fromMs) return false;
+    const d = doctors.find((x) => x.id === s.doctorId);
+    return !!d && (d.available === false || leaveCovers(d, start));
   });
 }
 
